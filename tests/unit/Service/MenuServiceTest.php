@@ -19,6 +19,7 @@ use OCA\Tables\Db\PageContentMapper;
 use OCA\Tables\Db\PageMapper;
 use OCA\Tables\Db\Table;
 use OCA\Tables\Db\TableMapper;
+use OCA\Tables\Db\View;
 use OCA\Tables\Db\ViewMapper;
 use OCA\Tables\Db\WidgetMapper;
 use OCA\Tables\Db\WidgetSourceMapper;
@@ -51,8 +52,10 @@ class MenuServiceTest extends DatabaseTestCase {
 	private const OWNER = 'menu-service-owner';
 	private const TABLE = 4151;
 	private const TABLE_UUID = 'a5d8e2c4-4151-4cde-9f00-000000004151';
-	private const OTHER_TABLE = 4152;
-	private const OTHER_TABLE_UUID = 'a5d8e2c4-4152-4cde-9f00-000000004152';
+	private const VIEW = 4152;
+	private const VIEW_UUID = 'a5d8e2c4-4152-4cde-9f00-000000004152';
+	private const OTHER_TABLE = 4153;
+	private const OTHER_TABLE_UUID = 'a5d8e2c4-4153-4cde-9f00-000000004153';
 
 	private MenuService $menuService;
 	private ContextService $contextService;
@@ -87,7 +90,14 @@ class MenuServiceTest extends DatabaseTestCase {
 		$otherTable->id = self::OTHER_TABLE;
 		$otherTable->setUuid(self::OTHER_TABLE_UUID);
 		$tableMapper->method('findByUuid')->willReturnCallback(static fn (string $uuid): Table => [self::TABLE_UUID => $table, self::OTHER_TABLE_UUID => $otherTable][$uuid] ?? throw new DoesNotExistException('No table'));
-		$this->menuService = new MenuService($contextMapper, $this->menuItemMapper, $this->permissionsService, $tableMapper, $this->createMock(ViewMapper::class), $this->connectionAdapter);
+		$viewMapper = $this->createMock(ViewMapper::class);
+		$viewMapper->method('findIdToTitleMap')->willReturnCallback(static fn (array $ids): array => in_array(self::VIEW, $ids, true) ? [self::VIEW => 'Team'] : []);
+		$view = new View();
+		$view->id = self::VIEW;
+		$view->setUuid(self::VIEW_UUID);
+		$viewMapper->method('findMany')->willReturnCallback(static fn (array $ids): array => in_array(self::VIEW, $ids, true) ? [self::VIEW => $view] : []);
+		$viewMapper->method('findByUuid')->willReturnCallback(static fn (string $uuid): View => $uuid === self::VIEW_UUID ? $view : throw new DoesNotExistException('No view'));
+		$this->menuService = new MenuService($contextMapper, $this->menuItemMapper, $this->permissionsService, $tableMapper, $viewMapper, $this->connectionAdapter);
 
 		$this->contextService = new ContextService(
 			$contextMapper,
@@ -104,7 +114,7 @@ class MenuServiceTest extends DatabaseTestCase {
 			$this->createMock(INavigationManager::class),
 			$this->createMock(IURLGenerator::class),
 			$tableMapper,
-			$this->createMock(ViewMapper::class),
+			$viewMapper,
 			$widgetService,
 			new GridWidgetTypes($l10n),
 			$this->menuItemMapper,
@@ -371,12 +381,9 @@ class MenuServiceTest extends DatabaseTestCase {
 		$this->menuService->create($contextId, null, null, null, ['pageId' => $pageId], self::OWNER);
 		$context = $this->contextService->findById($contextId, self::OWNER);
 		$exported = json_decode(json_encode($context->jsonSerialize() + ['pages' => $this->contextService->getPagesWithWidgets($context), 'menu' => $this->menuService->export($context)]), true);
-		$movedTable = new Table();
-		$movedTable->id = self::TABLE;
-		$movedTable->setOwnership(self::OWNER);
 		$exported['menu'][] = ['title' => 'Elsewhere', 'target' => ['table' => 'f0000000-0000-4000-8000-000000000000']];
 
-		$moved = $this->contextService->importContext($movedTable, $exported, self::TABLE, self::TABLE_UUID);
+		$moved = $this->contextService->importContext($exported, self::OWNER, [self::TABLE => self::TABLE], []);
 		$this->contextIds[] = $moved->getId();
 
 		$menu = $this->menuService->findAll($moved->getId(), self::OWNER);
@@ -430,11 +437,8 @@ class MenuServiceTest extends DatabaseTestCase {
 		$this->menuService->create($contextId, null, null, null, ['pageId' => $pageId], self::OWNER);
 		$context = $this->contextService->findById($contextId, self::OWNER);
 		$exported = json_decode(json_encode($context->jsonSerialize() + ['pages' => $this->contextService->getPagesWithWidgets($context), 'menu' => $this->menuService->export($context)]), true);
-		$table = new Table();
-		$table->id = self::TABLE;
-		$table->setOwnership(self::OWNER);
 
-		$moved = $this->contextService->importContext($table, $exported, self::TABLE, self::TABLE_UUID);
+		$moved = $this->contextService->importContext($exported, self::OWNER, [self::TABLE => self::TABLE], []);
 		$this->contextIds[] = $moved->getId();
 
 		$movedContext = $this->contextService->findById($moved->getId(), self::OWNER);
@@ -456,6 +460,30 @@ class MenuServiceTest extends DatabaseTestCase {
 			['page_type' => Page::TYPE_GRID, 'technical_name' => $name],
 			'not a page',
 		]));
+	}
+
+	public function testAMovedUsersMenuFollowsTheTablesAndViewsTheyWereImportedAs(): void {
+		$context = $this->contextService->create('Sales', 'tables', '', [
+			['id' => self::TABLE, 'type' => Application::NODE_TYPE_TABLE],
+			['id' => self::VIEW, 'type' => Application::NODE_TYPE_VIEW],
+		], self::OWNER, Application::OWNER_TYPE_USER);
+		$this->contextIds[] = $context->getId();
+		$relationIds = array_flip(array_column($this->contextService->findById($context->getId(), self::OWNER)->getNodes(), 'node_id', 'id'));
+		$this->menuService->create($context->getId(), null, null, null, ['nodeRelId' => $relationIds[self::TABLE]], self::OWNER);
+		$this->menuService->create($context->getId(), null, null, null, ['nodeRelId' => $relationIds[self::VIEW]], self::OWNER);
+		$context = $this->contextService->findById($context->getId(), self::OWNER);
+		$exported = json_decode(json_encode($context->jsonSerialize() + ['pages' => $this->contextService->getPagesWithWidgets($context), 'menu' => $this->menuService->export($context)]), true);
+		$exported['nodes'][$relationIds[self::TABLE]]['node_id'] = 11;
+		$exported['nodes'][$relationIds[self::VIEW]]['node_id'] = 12;
+		$exported['menu'][] = ['title' => 'Elsewhere', 'target' => ['view' => 'f0000000-0000-4000-8000-000000000000']];
+
+		$moved = $this->contextService->importContext($exported, self::OWNER, [11 => self::TABLE], [12 => self::VIEW]);
+		$this->contextIds[] = $moved->getId();
+
+		$movedRelationIds = array_flip(array_column($this->contextService->findById($moved->getId(), self::OWNER)->getNodes(), 'node_id', 'id'));
+		$menu = array_slice($this->menuService->findAll($moved->getId(), self::OWNER), -2);
+		$this->assertSame(['Projects', 'Team'], array_column($menu, 'displayTitle'));
+		$this->assertSame([['nodeRelId' => $movedRelationIds[self::TABLE]], ['nodeRelId' => $movedRelationIds[self::VIEW]]], array_column($menu, 'target'));
 	}
 
 	public static function unusableItems(): array {
