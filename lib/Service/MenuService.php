@@ -392,14 +392,16 @@ class MenuService {
 	/**
 	 * The menu a scheme import into this application would save, as the preview shows it and
 	 * as the import takes it back: page targets point at pages of the application, and only
-	 * tables and views among the scheme's nodes count as having come along.
+	 * tables and views among the scheme's nodes count as having come along. A page the
+	 * import adds is not there yet; `$addedPageIds` lists those by exported id.
 	 *
 	 * @param list<mixed> $menu
 	 * @param array<array-key, mixed> $schemePages
 	 * @param array<array-key, mixed> $schemeNodes
+	 * @param array<int, int> $addedPageIds
 	 * @return array{to: list<array<array-key, mixed>>, skipped: list<array{index: int, title: ?string, reason: string}>}
 	 */
-	public function previewSchemeImport(Context $context, array $menu, array $schemePages, array $schemeNodes): array {
+	public function previewSchemeImport(Context $context, array $menu, array $schemePages, array $schemeNodes, array $addedPageIds = []): array {
 		$schemeUuids = [];
 		foreach ($schemeNodes as $node) {
 			$kind = ($node['node_type'] ?? null) === Application::NODE_TYPE_VIEW ? 'view' : 'table';
@@ -410,7 +412,7 @@ class MenuService {
 			$context,
 			$menu,
 			static fn (string $kind, string $uuid): ?int => isset($schemeUuids[$kind][$uuid]) ? 0 : null,
-			static fn (int $pageId): ?int => $pageIds[$pageId] ?? null,
+			static fn (int $pageId): ?int => $pageIds[$pageId] ?? $addedPageIds[$pageId] ?? null,
 		);
 		return ['to' => $this->withLocalPages(array_column($items, 'entry'), $pageIds), 'skipped' => $skipped];
 	}
